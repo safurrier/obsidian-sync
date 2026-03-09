@@ -1,0 +1,124 @@
+"""Git operations for obsidian-sync."""
+
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+
+CONFLICT_MARKERS = ("CONFLICT", "could not apply", "Merge conflict")
+
+
+@dataclass
+class PullResult:
+    success: bool
+    conflict: bool
+    message: str
+
+
+@dataclass
+class PushResult:
+    success: bool
+    message: str
+
+
+class GitError(Exception):
+    """Base exception for git operations."""
+
+
+class PullConflictError(GitError):
+    """Raised when pull --rebase encounters a conflict."""
+
+
+class PushError(GitError):
+    """Raised when push fails."""
+
+
+def _run_git(repo_path: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
+    """Run a git command in the repo directory. Returns completed process."""
+    return subprocess.run(
+        ["git", *args],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+    )
+
+
+def is_dirty(repo_path: Path) -> bool:
+    """Check working tree for changes (modified, staged, or untracked)."""
+    result = _run_git(repo_path, ["status", "--porcelain"])
+    return bool(result.stdout.strip())
+
+
+def get_changed_files(repo_path: Path) -> list[str]:
+    """List files with uncommitted changes (modified + untracked).
+
+    Uses ``git status --porcelain -u`` to enumerate individual untracked files
+    rather than collapsing them into directory entries.
+    """
+    result = _run_git(repo_path, ["status", "--porcelain", "-u"])
+    files: list[str] = []
+    for line in result.stdout.splitlines():
+        if line.strip():
+            # Porcelain format: XY filename (first 3 chars are status + space)
+            files.append(line[3:].strip())
+    return files
+
+
+def get_staged_files(repo_path: Path) -> list[str]:
+    """List files in the staging area."""
+    result = _run_git(repo_path, ["diff", "--cached", "--name-only"])
+    return [f for f in result.stdout.splitlines() if f.strip()]
+
+
+def add_all(repo_path: Path) -> None:
+    """Stage all changes including untracked files."""
+    result = _run_git(repo_path, ["add", "-A"])
+    if result.returncode != 0:
+        raise GitError(f"git add -A failed: {result.stderr}")
+
+
+def commit(repo_path: Path, message: str, body: str | None = None) -> None:
+    """Create a commit with the given message and optional body."""
+    args = ["commit", "--no-verify", "-m", message]
+    if body is not None:
+        args.extend(["-m", body])
+    result = _run_git(repo_path, args)
+    if result.returncode != 0:
+        raise GitError(f"git commit failed: {result.stderr}")
+
+
+def pull(
+    repo_path: Path,
+    remote: str = "origin",
+    branch: str = "main",
+    strategy: str = "rebase",
+) -> PullResult:
+    """Pull from remote. Raises PullConflictError on conflicts."""
+    if strategy == "rebase":
+        args = ["pull", "--rebase", remote, branch]
+    elif strategy == "ff-only":
+        args = ["pull", "--ff-only", remote, branch]
+    else:
+        args = ["pull", remote, branch]
+
+    result = _run_git(repo_path, args)
+    combined_output = result.stdout + result.stderr
+
+    if result.returncode != 0:
+        for marker in CONFLICT_MARKERS:
+            if marker in combined_output:
+                raise PullConflictError(combined_output)
+        raise GitError(f"git pull failed: {combined_output}")
+
+    return PullResult(success=True, conflict=False, message=combined_output.strip())
+
+
+def push(
+    repo_path: Path,
+    remote: str = "origin",
+    branch: str = "main",
+) -> PushResult:
+    """Push to remote. Raises PushError on failure."""
+    result = _run_git(repo_path, ["push", "--no-verify", remote, branch])
+    if result.returncode != 0:
+        raise PushError(f"git push failed: {result.stderr}")
+    return PushResult(success=True, message=result.stdout.strip())

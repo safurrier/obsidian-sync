@@ -1,0 +1,14 @@
+[Unit]
+Description=Obsidian vault git sync daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/obsidian-sync start
+Restart=on-failure
+RestartSec=30
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target

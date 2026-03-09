@@ -1,0 +1,351 @@
+"""Click CLI for obsidian-sync."""
+
+import importlib.resources
+import os
+import platform
+import shutil
+import subprocess
+from pathlib import Path
+
+import click
+from rich.console import Console
+from rich.table import Table
+
+from obsidian_sync.config import (
+    DEFAULT_CONFIG_PATH,
+    SyncConfig,
+    expand_paths,
+    load_config,
+    save_config,
+)
+from obsidian_sync.daemon import LockError, SyncDaemon, daemonize, setup_logging
+
+console = Console()
+
+LAUNCHD_LABEL = "io.github.obsidian-sync"
+LAUNCHD_PLIST_NAME = f"{LAUNCHD_LABEL}.plist"
+SYSTEMD_UNIT_NAME = "obsidian-sync.service"
+
+
+def _load_and_expand(config_path: Path | None) -> SyncConfig:
+    """Load config and expand all paths."""
+    config = load_config(config_path)
+    return expand_paths(config)
+
+
+@click.group()
+@click.option(
+    "--config",
+    "config_path",
+    type=click.Path(exists=False, path_type=Path),
+    default=None,
+    help="Path to config file.",
+)
+@click.option("--verbose", is_flag=True, default=False, help="Enable verbose output.")
+@click.pass_context
+def main(ctx: click.Context, config_path: Path | None, verbose: bool) -> None:
+    """Git sync daemon for Obsidian vaults."""
+    ctx.ensure_object(dict)
+    ctx.obj["config_path"] = config_path
+    ctx.obj["verbose"] = verbose
+
+
+@main.command()
+@click.option("--daemon", "run_daemon", is_flag=True, default=False, help="Run in background.")
+@click.pass_context
+def start(ctx: click.Context, run_daemon: bool) -> None:
+    """Start the sync loop."""
+    config = _load_and_expand(ctx.obj["config_path"])
+    setup_logging(config.log.path, verbose=ctx.obj["verbose"])
+
+    if run_daemon:
+        console.print(f"Starting daemon (vault: {config.vault_path})")
+        daemonize()
+
+    d = SyncDaemon(config)
+    try:
+        d.run()
+    except LockError as e:
+        raise click.ClickException(str(e)) from e
+
+
+@main.command()
+@click.pass_context
+def stop(ctx: click.Context) -> None:
+    """Stop a running daemon."""
+    config = _load_and_expand(ctx.obj["config_path"])
+    lock_path = Path(config.lock_path)
+
+    if not lock_path.exists():
+        raise click.ClickException("No daemon is running (lock file not found)")
+
+    d = SyncDaemon(config)
+    if d.stop():
+        console.print("[green]Daemon stopped[/green]")
+    else:
+        raise click.ClickException("Failed to stop daemon")
+
+
+@main.command()
+@click.pass_context
+def status(ctx: click.Context) -> None:
+    """Show daemon status."""
+    config = _load_and_expand(ctx.obj["config_path"])
+    lock_path = Path(config.lock_path)
+    log_path = Path(config.log.path)
+
+    table = Table(title="obsidian-sync status", show_header=False)
+    table.add_column("Key", style="bold")
+    table.add_column("Value")
+
+    if lock_path.exists():
+        try:
+            pid = lock_path.read_text().strip()
+            table.add_row("Status", "[green]Running[/green]")
+            table.add_row("PID", pid)
+        except OSError:
+            table.add_row("Status", "[yellow]Unknown[/yellow]")
+    else:
+        table.add_row("Status", "[dim]Stopped[/dim]")
+
+    table.add_row("Vault", config.vault_path)
+    table.add_row("Interval", f"{config.sync.interval_seconds}s")
+    table.add_row("Strategy", config.sync.pull_strategy)
+    table.add_row("Remote", f"{config.sync.remote}/{config.sync.branch}")
+
+    if log_path.exists():
+        lines = log_path.read_text().strip().splitlines()
+        if lines:
+            table.add_row("Last log", lines[-1])
+
+    console.print(table)
+
+
+@main.command()
+@click.pass_context
+def sync(ctx: click.Context) -> None:
+    """Run one sync cycle, then exit."""
+    config = _load_and_expand(ctx.obj["config_path"])
+    setup_logging(config.log.path, verbose=ctx.obj["verbose"])
+    d = SyncDaemon(config)
+    result = d.run_once()
+
+    if result.error:
+        raise click.ClickException(result.message)
+    elif result.deferred:
+        console.print(f"[yellow]{result.message}[/yellow]")
+    elif result.files_changed > 0:
+        console.print(f"[green]{result.message}[/green]")
+    else:
+        console.print(f"[dim]{result.message}[/dim]")
+
+
+@main.command()
+@click.option("--tail", is_flag=True, default=False, help="Follow log output.")
+@click.option("--since", default=None, help="Show entries since duration (e.g., 1h, 30m).")
+@click.option("-n", "lines", default=50, help="Number of lines to show.")
+@click.pass_context
+def log(ctx: click.Context, tail: bool, since: str | None, lines: int) -> None:
+    """Show sync log entries."""
+    config = _load_and_expand(ctx.obj["config_path"])
+    log_path = Path(config.log.path)
+
+    if not log_path.exists():
+        raise click.ClickException(f"Log file not found: {log_path}")
+
+    if tail:
+        subprocess.run(["tail", "-f", str(log_path)], check=False)
+    else:
+        all_lines = log_path.read_text().strip().splitlines()
+        for line in all_lines[-lines:]:
+            console.print(line)
+
+
+@main.command()
+@click.option("--init", "do_init", is_flag=True, default=False, help="Create default config.")
+@click.option("--edit", "do_edit", is_flag=True, default=False, help="Open config in $EDITOR.")
+@click.pass_context
+def config(ctx: click.Context, do_init: bool, do_edit: bool) -> None:
+    """Show or initialize configuration."""
+    config_path = ctx.obj["config_path"] or DEFAULT_CONFIG_PATH.expanduser()
+
+    if do_init:
+        if config_path.exists():
+            raise click.ClickException(f"Config already exists: {config_path}")
+        vault = click.prompt("Vault path", default="~/obsidian-vault")
+        interval = click.prompt("Sync interval (seconds)", default=300, type=int)
+        cfg = SyncConfig(vault_path=vault)
+        cfg.sync.interval_seconds = interval
+        save_config(cfg, config_path)
+        console.print(f"[green]Config created: {config_path}[/green]")
+        return
+
+    if do_edit:
+        editor = os.environ.get("EDITOR", "vim")
+        if not config_path.exists():
+            msg = f"Config not found: {config_path}. Run 'config --init' first."
+            raise click.ClickException(msg)
+        subprocess.run([editor, str(config_path)], check=False)
+        return
+
+    cfg = load_config(ctx.obj["config_path"])
+    table = Table(title="Configuration", show_header=False)
+    table.add_column("Key", style="bold")
+    table.add_column("Value")
+    table.add_row("vault_path", cfg.vault_path)
+    table.add_row("sync.interval_seconds", str(cfg.sync.interval_seconds))
+    table.add_row("sync.pull_strategy", cfg.sync.pull_strategy)
+    table.add_row("sync.remote", cfg.sync.remote)
+    table.add_row("sync.branch", cfg.sync.branch)
+    table.add_row("commit.template", cfg.commit.template)
+    table.add_row("commit.date_format", cfg.commit.date_format)
+    table.add_row("commit.list_files_in_body", str(cfg.commit.list_files_in_body))
+    table.add_row("log.path", cfg.log.path)
+    table.add_row("log.max_size_mb", str(cfg.log.max_size_mb))
+    table.add_row("lock_path", cfg.lock_path)
+    console.print(table)
+
+
+@main.command()
+@click.pass_context
+def install(ctx: click.Context) -> None:
+    """Install as a system service (launchd on macOS, systemd on Linux)."""
+    system = platform.system()
+
+    if system == "Darwin":
+        _install_launchd()
+    elif system == "Linux":
+        _install_systemd()
+    else:
+        raise click.ClickException(f"Unsupported platform: {system}")
+
+
+@main.command()
+@click.pass_context
+def uninstall(ctx: click.Context) -> None:
+    """Remove the system service."""
+    system = platform.system()
+
+    if system == "Darwin":
+        _uninstall_launchd()
+    elif system == "Linux":
+        _uninstall_systemd()
+    else:
+        raise click.ClickException(f"Unsupported platform: {system}")
+
+
+@main.command()
+@click.pass_context
+def enable(ctx: click.Context) -> None:
+    """Enable service to start on login."""
+    system = platform.system()
+
+    if system == "Darwin":
+        plist = Path.home() / "Library" / "LaunchAgents" / LAUNCHD_PLIST_NAME
+        if not plist.exists():
+            raise click.ClickException("Service not installed. Run 'install' first.")
+        subprocess.run(["launchctl", "load", str(plist)], check=True)
+        console.print("[green]Service enabled (launchd)[/green]")
+    elif system == "Linux":
+        subprocess.run(["systemctl", "--user", "enable", SYSTEMD_UNIT_NAME], check=True)
+        subprocess.run(["systemctl", "--user", "start", SYSTEMD_UNIT_NAME], check=True)
+        console.print("[green]Service enabled (systemd)[/green]")
+    else:
+        raise click.ClickException(f"Unsupported platform: {system}")
+
+
+@main.command()
+@click.pass_context
+def disable(ctx: click.Context) -> None:
+    """Disable service from starting on login."""
+    system = platform.system()
+
+    if system == "Darwin":
+        plist = Path.home() / "Library" / "LaunchAgents" / LAUNCHD_PLIST_NAME
+        if plist.exists():
+            subprocess.run(["launchctl", "unload", str(plist)], check=False)
+        console.print("[green]Service disabled (launchd)[/green]")
+    elif system == "Linux":
+        subprocess.run(["systemctl", "--user", "stop", SYSTEMD_UNIT_NAME], check=False)
+        subprocess.run(["systemctl", "--user", "disable", SYSTEMD_UNIT_NAME], check=False)
+        console.print("[green]Service disabled (systemd)[/green]")
+    else:
+        raise click.ClickException(f"Unsupported platform: {system}")
+
+
+def _get_template(filename: str) -> Path:
+    """Get a service template file from the bundled package data.
+
+    Falls back to ~/.config/obsidian-sync/ if the bundled template is not found.
+    """
+    # Check user config dir first (allows overrides)
+    home_config = Path.home() / ".config" / "obsidian-sync" / filename
+    if home_config.exists():
+        return home_config
+
+    # Use bundled templates from the package
+    templates = importlib.resources.files("obsidian_sync.templates")
+    template_ref = templates.joinpath(filename)
+    # as_file() handles both installed wheels and editable installs
+    with importlib.resources.as_file(template_ref) as template_path:
+        if template_path.exists():
+            return template_path
+
+    raise FileNotFoundError(f"Service template not found: {filename}")
+
+
+def _install_launchd() -> None:
+    """Install macOS LaunchAgent."""
+    try:
+        source = _get_template(LAUNCHD_PLIST_NAME)
+    except FileNotFoundError:
+        raise click.ClickException(
+            f"Plist template not found: {LAUNCHD_PLIST_NAME}"
+        )
+    dest_dir = Path.home() / "Library" / "LaunchAgents"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / LAUNCHD_PLIST_NAME
+    shutil.copy2(source, dest)
+    console.print(f"[green]Installed: {dest}[/green]")
+    console.print("Run 'obsidian-sync enable' to start on login")
+
+
+def _uninstall_launchd() -> None:
+    """Remove macOS LaunchAgent."""
+    plist = Path.home() / "Library" / "LaunchAgents" / LAUNCHD_PLIST_NAME
+    if plist.exists():
+        subprocess.run(["launchctl", "unload", str(plist)], check=False)
+        plist.unlink()
+        console.print("[green]Service removed[/green]")
+    else:
+        console.print("[dim]Service not installed[/dim]")
+
+
+def _install_systemd() -> None:
+    """Install Linux systemd user unit."""
+    try:
+        source = _get_template(SYSTEMD_UNIT_NAME)
+    except FileNotFoundError:
+        raise click.ClickException(
+            f"Systemd unit not found: {SYSTEMD_UNIT_NAME}"
+        )
+    dest_dir = Path.home() / ".config" / "systemd" / "user"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / SYSTEMD_UNIT_NAME
+    shutil.copy2(source, dest)
+    subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
+    console.print(f"[green]Installed: {dest}[/green]")
+    console.print("Run 'obsidian-sync enable' to start on login")
+
+
+def _uninstall_systemd() -> None:
+    """Remove Linux systemd user unit."""
+    unit = Path.home() / ".config" / "systemd" / "user" / SYSTEMD_UNIT_NAME
+    if unit.exists():
+        subprocess.run(["systemctl", "--user", "stop", SYSTEMD_UNIT_NAME], check=False)
+        subprocess.run(["systemctl", "--user", "disable", SYSTEMD_UNIT_NAME], check=False)
+        unit.unlink()
+        subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
+        console.print("[green]Service removed[/green]")
+    else:
+        console.print("[dim]Service not installed[/dim]")
