@@ -1,0 +1,42 @@
+[tools]
+python = "3.12"
+
+[tasks.setup]
+description = "Install dependencies"
+run = "uv sync --all-extras"
+
+[tasks.check]
+description = "Run all checks"
+depends = ["lint", "format", "ty", "test"]
+
+[tasks.test]
+description = "Run tests with coverage"
+run = "uv run -m pytest tests --cov=src --cov-report=term-missing -m 'not e2e'"
+
+[tasks."test:all"]
+description = "Run all tests including e2e"
+run = "uv run -m pytest tests --cov=src --cov-report=term-missing"
+
+[tasks.lint]
+description = "Run linter"
+run = "uv run -m ruff check --fix src"
+
+[tasks.format]
+description = "Run formatter"
+run = "uv run -m ruff format src"
+
+[tasks.ty]
+description = "Type check"
+run = "uv run ty check src"
+
+[tasks.install]
+description = "Install CLI tool"
+run = "uv tool install -e ."
+
+[tasks."docs:serve"]
+description = "Serve docs locally"
+run = "uv run mkdocs serve"
+
+[tasks."docs:build"]
+description = "Build docs"
+run = "uv run mkdocs build --strict"

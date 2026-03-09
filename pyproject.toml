@@ -17,8 +17,19 @@ obsidian-sync = "obsidian_sync.cli:main"
 Homepage = "https://github.com/safurrier/obsidian-sync"
 Repository = "https://github.com/safurrier/obsidian-sync"
 
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.8",
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "pytest-xdist>=3.0",
+    "ty>=0.0.1a0",
+    "mkdocs-material>=9.0",
+    "mkdocstrings[python]>=0.24",
+]
+
 [dependency-groups]
-dev = ["pytest>=8.0", "pytest-xdist>=3.0"]
+dev = ["obsidian-sync[dev]"]
 
 [build-system]
 requires = ["hatchling"]
@@ -36,11 +47,18 @@ target-version = "py311"
 src = ["src", "tests"]
 
 [tool.ruff.lint]
-select = ["E", "F", "B", "I", "UP"]
+select = ["E", "W", "F", "I", "B", "C4", "UP", "N", "S", "RUF"]
+ignore = ["E501", "S101", "S603", "S607"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["obsidian_sync"]
 
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
+
+[tool.ty.environment]
+python-version = "3.11"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
