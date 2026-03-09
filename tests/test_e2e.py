@@ -20,10 +20,14 @@ pytestmark = pytest.mark.e2e
 @pytest.fixture
 def sync_env(tmp_path):
     """Set up a bare remote + cloned vault for e2e testing."""
-    # Create bare "remote" repo
+    # Create bare "remote" repo with explicit main branch
     remote = tmp_path / "remote.git"
     remote.mkdir()
-    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "init", "--bare", "--initial-branch=main", str(remote)],
+        check=True,
+        capture_output=True,
+    )
 
     # Clone as "vault"
     vault = tmp_path / "vault"
