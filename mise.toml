@@ -33,6 +33,10 @@ run = "uv run ty check src"
 description = "Install CLI tool"
 run = "uv tool install -e ."
 
+[tasks."test:e2e"]
+description = "Run e2e tests"
+run = "uv run -m pytest tests/test_e2e.py -v"
+
 [tasks."docs:serve"]
 description = "Serve docs locally"
 run = "uv run mkdocs serve"

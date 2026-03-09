@@ -64,3 +64,6 @@ python-version = "3.11"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 addopts = "-v --tb=short"
+markers = [
+    "e2e: end-to-end tests that exercise the full sync loop against a test git repo",
+]
