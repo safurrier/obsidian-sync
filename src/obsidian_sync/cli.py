@@ -298,10 +298,8 @@ def _install_launchd() -> None:
     """Install macOS LaunchAgent."""
     try:
         source = _get_template(LAUNCHD_PLIST_NAME)
-    except FileNotFoundError:
-        raise click.ClickException(
-            f"Plist template not found: {LAUNCHD_PLIST_NAME}"
-        )
+    except FileNotFoundError as e:
+        raise click.ClickException(f"Plist template not found: {LAUNCHD_PLIST_NAME}") from e
     dest_dir = Path.home() / "Library" / "LaunchAgents"
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / LAUNCHD_PLIST_NAME
@@ -325,10 +323,8 @@ def _install_systemd() -> None:
     """Install Linux systemd user unit."""
     try:
         source = _get_template(SYSTEMD_UNIT_NAME)
-    except FileNotFoundError:
-        raise click.ClickException(
-            f"Systemd unit not found: {SYSTEMD_UNIT_NAME}"
-        )
+    except FileNotFoundError as e:
+        raise click.ClickException(f"Systemd unit not found: {SYSTEMD_UNIT_NAME}") from e
     dest_dir = Path.home() / ".config" / "systemd" / "user"
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / SYSTEMD_UNIT_NAME

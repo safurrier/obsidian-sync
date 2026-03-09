@@ -1,0 +1,40 @@
+site_name: obsidian-sync
+site_description: Headless git sync daemon for Obsidian vaults
+site_url: https://safurrier.github.io/obsidian-sync/
+repo_url: https://github.com/safurrier/obsidian-sync
+repo_name: safurrier/obsidian-sync
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Dark mode
+    - scheme: slate
+      primary: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Light mode
+  features:
+    - navigation.instant
+    - navigation.tabs
+    - search.suggest
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            docstring_style: google
+            show_source: true
+
+nav:
+  - Home: index.md
+  - Getting Started: getting-started.md
+  - Configuration: configuration.md
+  - Reference:
+    - CLI: reference/cli.md
+    - API: reference/api.md
