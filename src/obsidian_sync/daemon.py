@@ -85,7 +85,13 @@ class SyncDaemon:
         return self.sync_cycle()
 
     def sync_cycle(self) -> SyncResult:
-        """Execute one pull-commit-push cycle."""
+        """Execute one commit-pull-push cycle.
+
+        Commits local changes before pulling so that ``git pull --rebase``
+        can cleanly rebase the local commit on top of remote changes.
+        Without committing first, pull fails with "cannot pull with rebase:
+        You have unstaged changes" when dirty files overlap with remote.
+        """
         vault = Path(self.config.vault_path)
         if not vault.exists():
             msg = f"Vault path does not exist: {vault}"
@@ -97,6 +103,28 @@ class SyncDaemon:
             logger.info(msg)
             return SyncResult(synced=False, files_changed=0, message=msg, deferred=True)
 
+        # Phase 1: Commit local changes (if any)
+        committed = False
+        changed_files: list[str] = []
+        if is_dirty(vault):
+            changed_files = get_changed_files(vault)
+            add_all(vault)
+
+            context = CommitContext(
+                changed_files=changed_files,
+                date_format=self.config.commit.date_format,
+            )
+            commit_msg = render_commit_message(self.config.commit.template, context)
+
+            body = None
+            if self.config.commit.list_files_in_body and changed_files:
+                body = "\n".join(changed_files)
+
+            commit(vault, commit_msg, body=body)
+            logger.info("Committed: %s", commit_msg)
+            committed = True
+
+        # Phase 2: Pull remote changes (rebase replays local commit on top)
         try:
             pull_result = pull(
                 vault,
@@ -114,26 +142,11 @@ class SyncDaemon:
             logger.warning(msg)
             return SyncResult(synced=False, files_changed=0, message=msg, error=msg)
 
-        if not is_dirty(vault):
+        # Phase 3: Push if we committed locally
+        if not committed:
             msg = "Working tree clean, nothing to sync"
             logger.info(msg)
             return SyncResult(synced=True, files_changed=0, message=msg)
-
-        changed_files = get_changed_files(vault)
-        add_all(vault)
-
-        context = CommitContext(
-            changed_files=changed_files,
-            date_format=self.config.commit.date_format,
-        )
-        commit_msg = render_commit_message(self.config.commit.template, context)
-
-        body = None
-        if self.config.commit.list_files_in_body and changed_files:
-            body = "\n".join(changed_files)
-
-        commit(vault, commit_msg, body=body)
-        logger.info("Committed: %s", commit_msg)
 
         try:
             push(vault, self.config.sync.remote, self.config.sync.branch)

@@ -217,8 +217,55 @@ class TestSyncE2E:
         # Verify the remote file is now in our vault
         assert (vault / "Remote Note.md").exists()
 
+    def test_sync_handles_overlapping_file_changes(self, sync_env):
+        """Same file edited on both sides (non-conflicting regions) -> sync succeeds.
+
+        Regression test: before the commit-before-pull fix, this would fail with
+        'cannot pull with rebase: You have unstaged changes' because the dirty
+        file overlapped with incoming remote changes.
+        """
+        vault = sync_env["vault"]
+        remote = sync_env["remote"]
+        config_path = sync_env["config_path"]
+        tmp_path = sync_env["tmp_path"]
+
+        # Make README multi-line so edits to different regions can auto-merge
+        (vault / "README.md").write_text("# Test Vault\n\nOriginal content\n")
+        subprocess.run(["git", "add", "."], cwd=vault, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-m", "multi-line readme"],
+            cwd=vault,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(["git", "push"], cwd=vault, check=True, capture_output=True)
+
+        # Remote appends to README.md
+        other = _clone_other_device(remote, tmp_path)
+        readme = (other / "README.md").read_text()
+        (other / "README.md").write_text(readme + "\nRemote addition\n")
+        subprocess.run(["git", "add", "."], cwd=other, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-m", "remote readme append"],
+            cwd=other,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(["git", "push"], cwd=other, check=True, capture_output=True)
+
+        # Local edits the title line of the SAME file
+        (vault / "README.md").write_text("# Test Vault (local edit)\n\nOriginal content\n")
+
+        result = _invoke_sync(config_path)
+        assert result.exit_code == 0, f"sync failed: {result.output}"
+
+        # Both edits should be present
+        final = (vault / "README.md").read_text()
+        assert "local edit" in final
+        assert "Remote addition" in final
+
     def test_sync_handles_concurrent_changes(self, sync_env):
-        """Local dirty + remote changes -> sync pulls then commits."""
+        """Local dirty + remote changes -> sync commits then pulls."""
         vault = sync_env["vault"]
         remote = sync_env["remote"]
         config_path = sync_env["config_path"]
