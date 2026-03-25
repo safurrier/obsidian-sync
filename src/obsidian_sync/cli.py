@@ -25,6 +25,7 @@ console = Console()
 
 LAUNCHD_LABEL = "com.alexfurrier.obsidian-sync"
 LAUNCHD_PLIST_NAME = f"{LAUNCHD_LABEL}.plist"
+LEGACY_LAUNCHD_PLIST_NAME = "io.github.obsidian-sync.plist"
 SYSTEMD_UNIT_NAME = "obsidian-sync.service"
 
 
@@ -322,8 +323,18 @@ def _get_template(filename: str) -> Path:
     raise FileNotFoundError(f"Service template not found: {filename}")
 
 
+def _remove_legacy_launchd() -> None:
+    """Remove the old io.github.obsidian-sync plist if present."""
+    legacy = Path.home() / "Library" / "LaunchAgents" / LEGACY_LAUNCHD_PLIST_NAME
+    if legacy.exists():
+        subprocess.run(["launchctl", "unload", str(legacy)], check=False)
+        legacy.unlink()
+        console.print(f"[yellow]Removed legacy service: {LEGACY_LAUNCHD_PLIST_NAME}[/yellow]")
+
+
 def _install_launchd() -> None:
     """Install macOS LaunchAgent."""
+    _remove_legacy_launchd()
     try:
         source = _get_template(LAUNCHD_PLIST_NAME)
     except FileNotFoundError as e:
@@ -340,6 +351,7 @@ def _install_launchd() -> None:
 
 def _uninstall_launchd() -> None:
     """Remove macOS LaunchAgent."""
+    _remove_legacy_launchd()
     plist = Path.home() / "Library" / "LaunchAgents" / LAUNCHD_PLIST_NAME
     if plist.exists():
         subprocess.run(["launchctl", "unload", str(plist)], check=False)

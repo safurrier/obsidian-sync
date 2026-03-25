@@ -18,6 +18,7 @@ from obsidian_sync.git_ops import (
     add_all,
     commit,
     get_changed_files,
+    is_ahead,
     is_dirty,
     pull,
     push,
@@ -142,8 +143,12 @@ class SyncDaemon:
             logger.warning(msg)
             return SyncResult(synced=False, files_changed=0, message=msg, error=msg)
 
-        # Phase 3: Push if we committed locally
-        if not committed:
+        # Phase 3: Push if local is ahead of remote (covers both fresh commits
+        # and previously-committed-but-not-pushed changes from failed pulls)
+        needs_push = committed or is_ahead(
+            vault, self.config.sync.remote, self.config.sync.branch
+        )
+        if not needs_push:
             msg = "Working tree clean, nothing to sync"
             logger.info(msg)
             return SyncResult(synced=True, files_changed=0, message=msg)
