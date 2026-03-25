@@ -14,17 +14,40 @@ from rich.table import Table
 from obsidian_sync.config import (
     DEFAULT_CONFIG_PATH,
     SyncConfig,
+    default_vault_path,
     expand_paths,
     load_config,
     save_config,
 )
-from obsidian_sync.daemon import LockError, SyncDaemon, daemonize, setup_logging
+from obsidian_sync.daemon import LockError, SyncDaemon, _is_pid_alive, daemonize, setup_logging
 
 console = Console()
 
-LAUNCHD_LABEL = "io.github.obsidian-sync"
+LAUNCHD_LABEL = "com.alexfurrier.obsidian-sync"
 LAUNCHD_PLIST_NAME = f"{LAUNCHD_LABEL}.plist"
 SYSTEMD_UNIT_NAME = "obsidian-sync.service"
+
+
+def _daemon_status(lock_path: Path) -> tuple[str, str | None]:
+    """Return daemon status and PID from the lock file when available."""
+    if not lock_path.exists():
+        return "Stopped", None
+
+    try:
+        pid = lock_path.read_text().strip()
+    except OSError:
+        return "Unknown", None
+
+    if not pid:
+        return "Unknown", None
+
+    try:
+        if _is_pid_alive(int(pid)):
+            return "Running", pid
+    except ValueError:
+        return "Invalid lock", pid
+
+    return "Stale lock", pid
 
 
 def _load_and_expand(config_path: Path | None) -> SyncConfig:
@@ -98,15 +121,20 @@ def status(ctx: click.Context) -> None:
     table.add_column("Key", style="bold")
     table.add_column("Value")
 
-    if lock_path.exists():
-        try:
-            pid = lock_path.read_text().strip()
-            table.add_row("Status", "[green]Running[/green]")
-            table.add_row("PID", pid)
-        except OSError:
-            table.add_row("Status", "[yellow]Unknown[/yellow]")
-    else:
+    daemon_status, pid = _daemon_status(lock_path)
+    if daemon_status == "Running":
+        table.add_row("Status", "[green]Running[/green]")
+    elif daemon_status == "Stopped":
         table.add_row("Status", "[dim]Stopped[/dim]")
+    elif daemon_status == "Stale lock":
+        table.add_row("Status", "[yellow]Stale lock[/yellow]")
+    elif daemon_status == "Invalid lock":
+        table.add_row("Status", "[yellow]Invalid lock[/yellow]")
+    else:
+        table.add_row("Status", "[yellow]Unknown[/yellow]")
+
+    if pid is not None:
+        table.add_row("PID", pid)
 
     table.add_row("Vault", config.vault_path)
     table.add_row("Interval", f"{config.sync.interval_seconds}s")
@@ -172,7 +200,7 @@ def config(ctx: click.Context, do_init: bool, do_edit: bool) -> None:
     if do_init:
         if config_path.exists():
             raise click.ClickException(f"Config already exists: {config_path}")
-        vault = click.prompt("Vault path", default="~/obsidian-vault")
+        vault = click.prompt("Vault path", default=default_vault_path())
         interval = click.prompt("Sync interval (seconds)", default=300, type=int)
         cfg = SyncConfig(vault_path=vault)
         cfg.sync.interval_seconds = interval
@@ -303,7 +331,9 @@ def _install_launchd() -> None:
     dest_dir = Path.home() / "Library" / "LaunchAgents"
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / LAUNCHD_PLIST_NAME
-    shutil.copy2(source, dest)
+    rendered = source.read_text().replace("%HOME%", str(Path.home()))
+    dest.write_text(rendered)
+    shutil.copystat(source, dest)
     console.print(f"[green]Installed: {dest}[/green]")
     console.print("Run 'obsidian-sync enable' to start on login")
 
