@@ -86,12 +86,17 @@ class SyncDaemon:
         return self.sync_cycle()
 
     def sync_cycle(self) -> SyncResult:
-        """Execute one commit-pull-push cycle.
+        """Execute one sync cycle.
 
-        Commits local changes before pulling so that ``git pull --rebase``
-        can cleanly rebase the local commit on top of remote changes.
-        Without committing first, pull fails with "cannot pull with rebase:
-        You have unstaged changes" when dirty files overlap with remote.
+        For rebase/merge strategies: commit → pull → push.  Committing first
+        lets ``git pull --rebase`` cleanly replay the local commit on top of
+        remote changes.  Without committing first, pull fails with "cannot
+        pull with rebase: You have unstaged changes" when dirty files overlap
+        with remote.
+
+        For ff-only strategy: pull → commit → push.  Creating a local commit
+        before pull would make histories diverge, causing ff-only to fail
+        whenever the remote also has new commits.
         """
         vault = Path(self.config.vault_path)
         if not vault.exists():
@@ -104,23 +109,21 @@ class SyncDaemon:
             logger.info(msg)
             return SyncResult(synced=False, files_changed=0, message=msg, deferred=True)
 
+        # ff-only cannot have local commits before pull (would break fast-forward),
+        # so it uses the original pull-first order.
+        if self.config.sync.pull_strategy == "ff-only":
+            return self._sync_pull_first(vault)
+        return self._sync_commit_first(vault)
+
+    def _sync_commit_first(self, vault: Path) -> SyncResult:
+        """Commit → pull → push.  Used for rebase and merge strategies."""
         # Phase 1: Commit local changes (if any)
         committed = False
         changed_files: list[str] = []
         if is_dirty(vault):
             changed_files = get_changed_files(vault)
             add_all(vault)
-
-            context = CommitContext(
-                changed_files=changed_files,
-                date_format=self.config.commit.date_format,
-            )
-            commit_msg = render_commit_message(self.config.commit.template, context)
-
-            body = None
-            if self.config.commit.list_files_in_body and changed_files:
-                body = "\n".join(changed_files)
-
+            commit_msg, body = self._build_commit(changed_files)
             commit(vault, commit_msg, body=body)
             logger.info("Committed: %s", commit_msg)
             committed = True
@@ -145,9 +148,7 @@ class SyncDaemon:
 
         # Phase 3: Push if local is ahead of remote (covers both fresh commits
         # and previously-committed-but-not-pushed changes from failed pulls)
-        needs_push = committed or is_ahead(
-            vault, self.config.sync.remote, self.config.sync.branch
-        )
+        needs_push = committed or is_ahead(vault, self.config.sync.remote, self.config.sync.branch)
         if not needs_push:
             msg = "Working tree clean, nothing to sync"
             logger.info(msg)
@@ -166,6 +167,62 @@ class SyncDaemon:
         msg = f"Synced {len(changed_files)} file(s)"
         logger.info(msg)
         return SyncResult(synced=True, files_changed=len(changed_files), message=msg)
+
+    def _sync_pull_first(self, vault: Path) -> SyncResult:
+        """Pull → commit → push.  Used for ff-only strategy."""
+        try:
+            pull_result = pull(
+                vault,
+                self.config.sync.remote,
+                self.config.sync.branch,
+                self.config.sync.pull_strategy,
+            )
+            logger.info("Pull: %s", pull_result.message)
+        except PullConflictError as e:
+            msg = f"Pull conflict: {e}"
+            logger.error(msg)
+            return SyncResult(synced=False, files_changed=0, message=msg, error=msg)
+        except GitError as e:
+            msg = f"Pull failed (will retry): {e}"
+            logger.warning(msg)
+            return SyncResult(synced=False, files_changed=0, message=msg, error=msg)
+
+        if not is_dirty(vault):
+            msg = "Working tree clean, nothing to sync"
+            logger.info(msg)
+            return SyncResult(synced=True, files_changed=0, message=msg)
+
+        changed_files = get_changed_files(vault)
+        add_all(vault)
+        commit_msg, body = self._build_commit(changed_files)
+        commit(vault, commit_msg, body=body)
+        logger.info("Committed: %s", commit_msg)
+
+        try:
+            push(vault, self.config.sync.remote, self.config.sync.branch)
+            logger.info("Pushed to %s/%s", self.config.sync.remote, self.config.sync.branch)
+        except PushError as e:
+            msg = f"Push failed: {e}"
+            logger.error(msg)
+            return SyncResult(
+                synced=False, files_changed=len(changed_files), message=msg, error=msg
+            )
+
+        msg = f"Synced {len(changed_files)} file(s)"
+        logger.info(msg)
+        return SyncResult(synced=True, files_changed=len(changed_files), message=msg)
+
+    def _build_commit(self, changed_files: list[str]) -> tuple[str, str | None]:
+        """Build commit message and body from changed files."""
+        context = CommitContext(
+            changed_files=changed_files,
+            date_format=self.config.commit.date_format,
+        )
+        commit_msg = render_commit_message(self.config.commit.template, context)
+        body = None
+        if self.config.commit.list_files_in_body and changed_files:
+            body = "\n".join(changed_files)
+        return commit_msg, body
 
     def _is_obsidian_running(self) -> bool:
         """Check if Obsidian is currently running."""
