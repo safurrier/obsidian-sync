@@ -145,6 +145,80 @@ class TestSyncCycle:
         assert result.deferred is True
         assert result.synced is False
 
+    def test_dirty_tree_with_overlapping_remote_changes(
+        self, daemon: SyncDaemon, vault_with_remote: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        """Regression: dirty tree + same file changed remotely must not fail.
+
+        Before the fix, pull --rebase would fail with 'cannot pull with rebase:
+        You have unstaged changes' when local dirty files overlapped with remote.
+        """
+        local, bare = vault_with_remote
+
+        # Make README multi-line so edits to different regions can auto-merge
+        (local / "README.md").write_text("# Vault\n\nOriginal content\n")
+        _git(local, "add", "-A")
+        _git(local, "commit", "-m", "multi-line README")
+        _git(local, "push", "origin", "main")
+
+        # Simulate another device appending to README.md and pushing
+        other = tmp_path / "other"
+        _git(tmp_path, "clone", str(bare), str(other))
+        _git(other, "config", "user.email", "other@test.com")
+        _git(other, "config", "user.name", "Other")
+        _git(other, "config", "core.hooksPath", "/dev/null")
+        readme = (other / "README.md").read_text()
+        (other / "README.md").write_text(readme + "\nAppended by other device\n")
+        _git(other, "add", "-A")
+        _git(other, "commit", "-m", "remote README append")
+        _git(other, "push", "origin", "main")
+
+        # Local has uncommitted edit to the SAME file (different region)
+        (local / "README.md").write_text("# Vault (edited locally)\n\nOriginal content\n")
+
+        with patch.object(daemon, "_is_obsidian_running", return_value=False):
+            result = daemon.sync_cycle()
+
+        # Must succeed — not stuck with "cannot pull with rebase"
+        assert result.synced is True
+        assert result.error is None
+        assert result.files_changed >= 1
+
+        # Both edits should be present
+        final = (local / "README.md").read_text()
+        assert "edited locally" in final
+        assert "Appended by other device" in final
+
+    def test_conflicting_edits_detected_cleanly(
+        self, daemon: SyncDaemon, vault_with_remote: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        """Conflicting edits to the same line should produce a conflict error,
+        not get stuck on 'cannot pull with rebase: You have unstaged changes'.
+        """
+        local, bare = vault_with_remote
+
+        # Simulate another device rewriting README.md line 1
+        other = tmp_path / "other"
+        _git(tmp_path, "clone", str(bare), str(other))
+        _git(other, "config", "user.email", "other@test.com")
+        _git(other, "config", "user.name", "Other")
+        _git(other, "config", "core.hooksPath", "/dev/null")
+        (other / "README.md").write_text("# Remote Vault\n")
+        _git(other, "add", "-A")
+        _git(other, "commit", "-m", "remote README rewrite")
+        _git(other, "push", "origin", "main")
+
+        # Local also rewrites the same line (conflicting)
+        (local / "README.md").write_text("# Local Vault\n")
+
+        with patch.object(daemon, "_is_obsidian_running", return_value=False):
+            result = daemon.sync_cycle()
+
+        # Should fail cleanly with a conflict error
+        assert result.synced is False
+        assert result.error is not None
+        assert "conflict" in result.error.lower()
+
     def test_nonexistent_vault(self, tmp_path: Path) -> None:
         config = SyncConfig(
             vault_path=str(tmp_path / "nonexistent"),

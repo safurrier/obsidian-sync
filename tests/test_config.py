@@ -1,5 +1,6 @@
 """Tests for obsidian_sync.config module."""
 
+from dataclasses import fields
 from pathlib import Path
 
 import yaml
@@ -9,6 +10,7 @@ from obsidian_sync.config import (
     LogSettings,
     SyncConfig,
     SyncSettings,
+    default_vault_path,
     expand_paths,
     load_config,
     save_config,
@@ -39,8 +41,16 @@ class TestDefaultConfigValues:
 
     def test_vault_and_lock_defaults(self):
         config = SyncConfig()
-        assert config.vault_path == "~/obsidian-vault"
+        assert config.vault_path == default_vault_path()
         assert config.lock_path == "~/.local/state/obsidian-sync/daemon.lock"
+
+    def test_vault_default_uses_factory(self):
+        vault_field = next(field for field in fields(SyncConfig) if field.name == "vault_path")
+        assert vault_field.default_factory is default_vault_path
+
+    def test_vault_default_honors_repo_root_env(self, monkeypatch):
+        monkeypatch.setenv("REPOS_ROOT", "~/src")
+        assert default_vault_path() == str(Path.home() / "src" / "obsidian-vault")
 
 
 class TestLoadConfig:

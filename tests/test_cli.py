@@ -81,6 +81,32 @@ class TestStatusCommand:
         assert result.exit_code == 0
         assert "Stopped" in result.output
 
+    def test_status_running_requires_live_pid(self, tmp_path: Path, monkeypatch) -> None:
+        config_path = _make_config_file(tmp_path)
+        lock_path = tmp_path / "daemon.lock"
+        lock_path.write_text("12345")
+        runner = CliRunner()
+        monkeypatch.setattr("obsidian_sync.cli._is_pid_alive", lambda pid: pid == 12345)
+
+        result = runner.invoke(main, ["--config", str(config_path), "status"])
+
+        assert result.exit_code == 0
+        assert "Running" in result.output
+        assert "12345" in result.output
+
+    def test_status_reports_stale_lock(self, tmp_path: Path, monkeypatch) -> None:
+        config_path = _make_config_file(tmp_path)
+        lock_path = tmp_path / "daemon.lock"
+        lock_path.write_text("12345")
+        runner = CliRunner()
+        monkeypatch.setattr("obsidian_sync.cli._is_pid_alive", lambda pid: False)
+
+        result = runner.invoke(main, ["--config", str(config_path), "status"])
+
+        assert result.exit_code == 0
+        assert "Stale lock" in result.output
+        assert "12345" in result.output
+
 
 class TestSyncCommand:
     def test_help(self) -> None:
@@ -129,6 +155,19 @@ class TestConfigCommand:
         result = runner.invoke(main, ["--config", str(config_path), "config", "--init"])
         assert result.exit_code != 0
         assert "already exists" in result.output
+
+    def test_config_init_uses_repo_root_default(self, tmp_path: Path, monkeypatch) -> None:
+        config_path = tmp_path / "default_config.yaml"
+        runner = CliRunner()
+        monkeypatch.setenv("REPOS_ROOT", str(tmp_path / "repos"))
+        result = runner.invoke(
+            main,
+            ["--config", str(config_path), "config", "--init"],
+            input="\n300\n",
+        )
+        assert result.exit_code == 0
+        data = yaml.safe_load(config_path.read_text())
+        assert str(tmp_path / "repos" / "obsidian-vault") in data["vault_path"]
 
     def test_config_show(self, tmp_path: Path) -> None:
         config_path = _make_config_file(tmp_path, vault_path="/my/vault")

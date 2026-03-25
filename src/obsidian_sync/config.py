@@ -1,11 +1,26 @@
 """YAML configuration loading with dataclass defaults for obsidian-sync."""
 
+import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import yaml
 
 DEFAULT_CONFIG_PATH = Path("~/.config/obsidian-sync/config.yaml")
+DEFAULT_REPOS_ROOT = Path.home() / "git_repositories"
+
+
+def default_repos_root() -> Path:
+    """Return the default repo root for personal git clones."""
+    raw_root = os.environ.get("REPOS_ROOT")
+    if raw_root:
+        return Path(raw_root).expanduser()
+    return DEFAULT_REPOS_ROOT
+
+
+def default_vault_path() -> str:
+    """Return the default Obsidian vault path."""
+    return str(default_repos_root() / "obsidian-vault")
 
 
 @dataclass
@@ -42,7 +57,7 @@ class LogSettings:
 class SyncConfig:
     """Top-level configuration for obsidian-sync."""
 
-    vault_path: str = "~/obsidian-vault"
+    vault_path: str = field(default_factory=default_vault_path)
     sync: SyncSettings = field(default_factory=SyncSettings)
     commit: CommitSettings = field(default_factory=CommitSettings)
     log: LogSettings = field(default_factory=LogSettings)

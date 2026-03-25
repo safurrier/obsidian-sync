@@ -3,11 +3,11 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>io.github.obsidian-sync</string>
+    <string>com.alexfurrier.obsidian-sync</string>
 
     <key>ProgramArguments</key>
     <array>
-        <string>obsidian-sync</string>
+        <string>%HOME%/.local/bin/obsidian-sync</string>
         <string>start</string>
     </array>
 
@@ -21,15 +21,15 @@
     </dict>
 
     <key>StandardOutPath</key>
-    <string>~/.local/state/obsidian-sync/launchd.log</string>
+    <string>%HOME%/.local/state/obsidian-sync/launchd.log</string>
 
     <key>StandardErrorPath</key>
-    <string>~/.local/state/obsidian-sync/launchd.log</string>
+    <string>%HOME%/.local/state/obsidian-sync/launchd.log</string>
 
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+        <string>%HOME%/.local/bin:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
     </dict>
 </dict>
 </plist>

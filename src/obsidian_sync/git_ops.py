@@ -112,6 +112,14 @@ def pull(
     return PullResult(success=True, conflict=False, message=combined_output.strip())
 
 
+def is_ahead(repo_path: Path, remote: str = "origin", branch: str = "main") -> bool:
+    """Check if local branch has commits not yet pushed to remote."""
+    result = _run_git(repo_path, ["rev-list", f"{remote}/{branch}..HEAD", "--count"])
+    if result.returncode != 0:
+        return False
+    return int(result.stdout.strip()) > 0
+
+
 def push(
     repo_path: Path,
     remote: str = "origin",
